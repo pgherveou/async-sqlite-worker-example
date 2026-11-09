@@ -1,5 +1,5 @@
-use crate::{exercise, handle, initialize, OperationError, Request, Response};
-use async_sqlite::{DatabaseBackend, WorkerDatabase};
+use crate::{balance, debit, exercise, initialize};
+use async_sqlite::{rusqlite::functions::FunctionFlags, Client};
 use futures_util::FutureExt;
 use wasm_bindgen::prelude::*;
 use web_sys::{Worker, WorkerOptions, WorkerType};
@@ -33,7 +33,7 @@ fn send_future<T: Send>(future: T) -> T {
 /// A caller-side handle whose SQL executes in another dedicated worker.
 #[wasm_bindgen]
 pub struct LedgerClient {
-    database: WorkerDatabase<Request, Response, OperationError>,
+    database: Client,
 }
 
 #[wasm_bindgen]
@@ -43,7 +43,7 @@ impl LedgerClient {
         let options = WorkerOptions::new();
         options.set_type(WorkerType::Module);
         let worker = Worker::new_with_options(&url, &options)?;
-        let database = WorkerDatabase::connect(worker).await.map_err(message)?;
+        let database = Client::connect(worker).await.map_err(message)?;
         Ok(Self { database })
     }
 
@@ -54,31 +54,17 @@ impl LedgerClient {
 
     /// Reads the persisted balance.
     pub async fn balance(&self) -> Result<i64, JsValue> {
-        match send_future(self.database.call(Request::Read))
-            .await
-            .map_err(message)?
-        {
-            Response::Balance(balance) => Ok(balance),
-            _ => Err(JsValue::from_str("unexpected response")),
-        }
+        send_future(balance(&self.database)).await.map_err(message)
     }
 
     /// Commits a debit and returns its resulting balance.
     pub async fn debit(&self, amount: i64) -> Result<i64, JsValue> {
-        match self
-            .database
-            .call(Request::Debit(amount))
-            .await
-            .map_err(message)?
-        {
-            Response::Balance(balance) => Ok(balance),
-            _ => Err(JsValue::from_str("unexpected response")),
-        }
+        debit(&self.database, amount).await.map_err(message)
     }
 
     /// Admits a write and drops the waiting future before its reply arrives.
     pub fn cancel_debit(&self, amount: i64) -> Result<(), JsValue> {
-        let mut call = Box::pin(self.database.call(Request::Debit(amount)));
+        let mut call = Box::pin(debit(&self.database, amount));
         if let Some(result) = call.as_mut().now_or_never() {
             result.map_err(message)?;
             return Err(JsValue::from_str(
@@ -89,17 +75,18 @@ impl LedgerClient {
         Ok(())
     }
 
-    /// Executes a SQLite query held by the test server's progress gate.
+    /// Executes a SQLite query held by the test server's gate.
     pub async fn long_query(&self) -> Result<i64, JsValue> {
-        match self
-            .database
-            .call(Request::LongQuery)
+        self.database
+            .query_row(
+                "WITH RECURSIVE numbers(value) AS (
+                    VALUES(1) UNION ALL SELECT value + 1 FROM numbers WHERE value < 10000
+                 ) SELECT SUM(value) + wait_for_release() FROM numbers",
+                [],
+                |row| row.get(0),
+            )
             .await
-            .map_err(message)?
-        {
-            Response::Sum(sum) => Ok(sum),
-            _ => Err(JsValue::from_str("unexpected response")),
-        }
+            .map_err(message)
     }
 
     /// Drains accepted work and closes the database.
@@ -125,43 +112,29 @@ pub async fn serve_ledger(
     let pool = install::<sqlite_wasm_rs::WasmOsCallback>(&OpfsSAHPoolCfg::default(), true)
         .await
         .map_err(message)?;
-    let connection = async_sqlite::rusqlite::Connection::open(name).map_err(message)?;
+    let mut connection = async_sqlite::rusqlite::Connection::open(name).map_err(message)?;
     initialize(&connection).map_err(message)?;
-    async_sqlite::serve_with_shutdown(
-        connection,
-        move |connection, request| {
-            let long_query = matches!(request, Request::LongQuery);
-            let debit = matches!(request, Request::Debit(_));
-            if long_query {
-                let mut waiting = true;
-                connection.progress_handler(
-                    1,
-                    Some(move || {
-                        if waiting {
-                            waiting = false;
-                            wait_for_release();
-                        }
-                        false
-                    }),
-                )?;
-            }
-            let result = handle(connection, request);
-            if long_query {
-                connection.progress_handler(0, None::<fn() -> bool>)?;
-            }
-            if lose_reply && debit && result.is_ok() {
+    connection
+        .create_scalar_function("wait_for_release", 0, FunctionFlags::SQLITE_UTF8, |_| {
+            wait_for_release();
+            Ok(0_i64)
+        })
+        .map_err(message)?;
+    if lose_reply {
+        connection
+            .commit_hook(Some(|| {
                 lose_next_reply();
-            }
-            result
-        },
-        move || {
-            pool.pause().map_err(message)?;
-            if fail_cleanup {
-                return Err(JsValue::from_str("requested cleanup failure"));
-            }
-            Ok(())
-        },
-    )
+                false
+            }))
+            .map_err(message)?;
+    }
+    async_sqlite::serve_with_shutdown(connection, move || {
+        pool.pause().map_err(message)?;
+        if fail_cleanup {
+            return Err(JsValue::from_str("requested cleanup failure"));
+        }
+        Ok(())
+    })
     .await
 }
 

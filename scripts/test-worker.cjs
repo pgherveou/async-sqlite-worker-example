@@ -25,7 +25,7 @@ async function main() {
   function waitForQuery() {
     assert.equal(gate, undefined);
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('SQLite did not reach the progress gate')), 10000);
+      const timer = setTimeout(() => reject(new Error('SQLite did not reach the query gate')), 10000);
       gate = { timer, arrive(response) {
         clearTimeout(timer);
         gate.response = response;

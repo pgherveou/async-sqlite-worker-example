@@ -1,6 +1,6 @@
 # async-sqlite worker example
 
-A Rust ledger handler running on native connection threads and in a dedicated
+Shared Rust ledger queries running on native connection threads and in a dedicated
 browser database worker, using the [async-sqlite fork](https://github.com/pgherveou/async-sqlite)
 pinned in `Cargo.toml`. Browser storage uses OPFS.
 
