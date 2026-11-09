@@ -136,6 +136,35 @@ async function main() {
     await assert.rejects(call('open', url('failed.sqlite3', '&fail=1')), /requested initialization failure/);
     console.log('PASS startup failure');
 
+    const startupReplies = await page.evaluate(async workerUrl => {
+      const worker = new Worker(workerUrl, { type: 'module' });
+      let timer;
+      try {
+        return await new Promise((resolve, reject) => {
+          const replies = [];
+          timer = setTimeout(() => reject(new Error('startup failure handshake timed out')), 10000);
+          worker.onerror = event => reject(new Error(event.message));
+          worker.onmessage = ({ data }) => {
+            replies.push(Array.from(data));
+            if (replies.length === 1) {
+              const malformedRequest = new Uint8Array([255]);
+              const hello = new Uint8Array([0]);
+              worker.postMessage(malformedRequest);
+              worker.postMessage(hello);
+            } else {
+              resolve(replies);
+            }
+          };
+        });
+      } finally {
+        clearTimeout(timer);
+        worker.terminate();
+      }
+    }, url('failed-handshake.sqlite3', '&fail=1'));
+    assert.equal(startupReplies.length, 2);
+    assert.deepEqual(startupReplies[1], startupReplies[0]);
+    console.log('PASS startup failure survives malformed messages until the handshake');
+
     await call('open', url('cleanup.sqlite3', '&fail_cleanup=1'));
     await assert.rejects(call('close'), /requested cleanup failure/);
     await assert.rejects(call('close'), /requested cleanup failure/);

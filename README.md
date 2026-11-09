@@ -16,5 +16,5 @@ npm run test:browser
 ```
 
 The tests cover transactions, rollback, value transport, caller responsiveness,
-OPFS persistence and worker failures. Set `WASM_BINDGEN` or `CHROMIUM` to use
-custom executables.
+OPFS persistence, startup handshakes and worker failures. Set `WASM_BINDGEN` or
+`CHROMIUM` to use custom executables.
