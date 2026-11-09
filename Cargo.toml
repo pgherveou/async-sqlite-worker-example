@@ -8,7 +8,7 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-async-sqlite = { git = "https://github.com/pgherveou/async-sqlite", rev = "35cadaf7c1578a1d7d7a94ad298531b7bc25a20d", features = ["sqlite-wasm-rs", "hooks", "functions"] }
+async-sqlite = { git = "https://github.com/pgherveou/async-sqlite", rev = "1364496dbe3014ac6ffd50920f8f3ede47ebdada", features = ["sqlite-wasm-rs", "hooks", "functions"] }
 futures-util = "0.3"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

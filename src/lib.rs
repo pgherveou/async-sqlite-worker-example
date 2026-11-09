@@ -11,6 +11,7 @@ mod tests;
 pub use ledger::{balance, debit, initialize, DebitError};
 
 use async_sqlite::{rusqlite, Client, Error};
+use futures_util::FutureExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Exercises atomic writes, refusals and exact value transport on either backend.
@@ -27,6 +28,53 @@ pub async fn exercise(database: &Client) -> Result<(), String> {
         ));
     }
     assert_eq!(balance(database).await.unwrap(), 70);
+
+    let transaction = database.transaction().await.unwrap();
+    transaction
+        .execute("UPDATE account SET balance = 1 WHERE id = 1", [])
+        .await
+        .unwrap();
+    let mut outside = Box::pin(balance(database));
+    assert!(outside.as_mut().now_or_never().is_none());
+    assert_eq!(
+        transaction
+            .query_row("SELECT balance FROM account WHERE id = 1", [], |row| row
+                .get::<i64>(0))
+            .await
+            .unwrap(),
+        1
+    );
+    drop(transaction);
+    assert_eq!(outside.await.unwrap(), 70);
+
+    let mut beginning = Box::pin(database.transaction());
+    if let Some(result) = beginning.as_mut().now_or_never() {
+        drop(result.unwrap());
+    }
+    drop(beginning);
+    assert_eq!(balance(database).await.unwrap(), 70);
+
+    database
+        .execute_batch("CREATE TEMP TABLE committed (value INTEGER)")
+        .await
+        .unwrap();
+    let transaction = database.transaction().await.unwrap();
+    transaction
+        .execute("INSERT INTO committed VALUES (1)", [])
+        .await
+        .unwrap();
+    let mut commit = Box::pin(transaction.commit());
+    if let Some(result) = commit.as_mut().now_or_never() {
+        result.unwrap();
+    }
+    drop(commit);
+    assert_eq!(
+        database
+            .query_row("SELECT value FROM committed", [], |row| row.get::<i64>(0))
+            .await
+            .unwrap(),
+        1
+    );
 
     assert!(matches!(
         database

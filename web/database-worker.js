@@ -10,6 +10,8 @@ if (options.has('fail')) {
       options.get('name') ?? 'ledger.sqlite3',
       options.has('lose_reply'),
       options.has('fail_cleanup'),
+      options.has('open_transaction'),
+      options.has('deny_rollback'),
     );
   } catch (error) {
     // Surface runtime traps and failed replies to the caller's Worker error listener.

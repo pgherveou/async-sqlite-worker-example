@@ -14,6 +14,7 @@ self.onmessage = async ({ data: { id, method, argument } }) => {
       case 'debit': result = await database.debit(BigInt(argument)); break;
       case 'cancel': result = database.cancel_debit(BigInt(argument)); break;
       case 'long_query': result = await database.long_query(); break;
+      case 'incomplete_batch': result = await database.incomplete_batch(); break;
       case 'close': result = await database.close(); break;
       case 'terminate': result = database.terminate(); break;
       case 'ping': result = 'caller-responsive'; break;

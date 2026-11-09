@@ -42,16 +42,22 @@ pub async fn balance(database: &Client) -> Result<i64, Error> {
 
 /// Debits and audits atomically, refusing amounts outside the available balance.
 pub async fn debit(database: &Client, amount: i64) -> Result<i64, DebitError> {
-    database
-        .query_row(
-            "UPDATE account SET balance = balance - ?1
-             WHERE id = 1 AND ?1 > 0 AND balance >= ?1 RETURNING balance",
-            [amount],
-            |row| row.get(0),
-        )
-        .await
-        .map_err(|error| match error {
-            Error::Rusqlite(rusqlite::Error::QueryReturnedNoRows) => DebitError::InsufficientFunds,
-            error => DebitError::Database(error),
+    let transaction = database.transaction().await.map_err(DebitError::Database)?;
+    let balance: i64 = transaction
+        .query_row("SELECT balance FROM account WHERE id = 1", [], |row| {
+            row.get(0)
         })
+        .await
+        .map_err(DebitError::Database)?;
+    if amount <= 0 || balance < amount {
+        transaction.rollback().await.map_err(DebitError::Database)?;
+        return Err(DebitError::InsufficientFunds);
+    }
+    let remaining = balance - amount;
+    transaction
+        .execute("UPDATE account SET balance = ?1 WHERE id = 1", [remaining])
+        .await
+        .map_err(DebitError::Database)?;
+    transaction.commit().await.map_err(DebitError::Database)?;
+    Ok(remaining)
 }

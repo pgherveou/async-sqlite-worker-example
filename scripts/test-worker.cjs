@@ -136,6 +136,21 @@ async function main() {
     await assert.rejects(call('open', url('failed.sqlite3', '&fail=1')), /requested initialization failure/);
     console.log('PASS startup failure');
 
+    await assert.rejects(call('open', url('recovery.sqlite3', '&open_transaction=1')), /active transaction/);
+    await call('open', url('recovery.sqlite3'));
+    assert.equal(await call('balance'), '100');
+    await call('close');
+    console.log('PASS startup rejects an active transaction and releases its changes and storage');
+
+    await call('open', url('recovery.sqlite3', '&deny_rollback=1'));
+    assert.equal(await call('balance'), '100');
+    await assert.rejects(call('incomplete_batch'), /not authorized|authorization denied/i);
+    await assert.rejects(call('balance'), /not dispatched|unknown|closed|cleanup failed/i);
+    await call('open', url('recovery.sqlite3'));
+    assert.equal(await call('balance'), '100');
+    await call('close');
+    console.log('PASS denied batch rollback closes the worker without leaking transaction changes');
+
     const startupReplies = await page.evaluate(async workerUrl => {
       const worker = new Worker(workerUrl, { type: 'module' });
       let timer;

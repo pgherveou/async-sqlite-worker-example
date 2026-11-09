@@ -64,7 +64,11 @@ impl LedgerClient {
 
     /// Admits a write and drops the waiting future before its reply arrives.
     pub fn cancel_debit(&self, amount: i64) -> Result<(), JsValue> {
-        let mut call = Box::pin(debit(&self.database, amount));
+        let mut call = Box::pin(self.database.execute(
+            "UPDATE account SET balance = balance - ?1
+             WHERE id = 1 AND ?1 > 0 AND balance >= ?1",
+            [amount],
+        ));
         if let Some(result) = call.as_mut().now_or_never() {
             result.map_err(message)?;
             return Err(JsValue::from_str(
@@ -89,6 +93,14 @@ impl LedgerClient {
             .map_err(message)
     }
 
+    /// Exercises cleanup when a SQL batch leaves a transaction open.
+    pub async fn incomplete_batch(&self) -> Result<(), JsValue> {
+        self.database
+            .execute_batch("BEGIN; UPDATE account SET balance = 0 WHERE id = 1;")
+            .await
+            .map_err(message)
+    }
+
     /// Drains accepted work and closes the database.
     pub async fn close(&self) -> Result<(), JsValue> {
         send_future(self.database.close()).await.map_err(message)
@@ -106,6 +118,8 @@ pub async fn serve_ledger(
     name: String,
     lose_reply: bool,
     fail_cleanup: bool,
+    open_transaction: bool,
+    deny_rollback: bool,
 ) -> Result<(), JsValue> {
     use sqlite_wasm_vfs::sahpool::{install, OpfsSAHPoolCfg};
 
@@ -114,6 +128,30 @@ pub async fn serve_ledger(
         .map_err(message)?;
     let mut connection = async_sqlite::rusqlite::Connection::open(name).map_err(message)?;
     initialize(&connection).map_err(message)?;
+    if open_transaction {
+        connection
+            .execute_batch("BEGIN; UPDATE account SET balance = 0 WHERE id = 1;")
+            .map_err(message)?;
+    }
+    if deny_rollback {
+        use async_sqlite::rusqlite::hooks::{
+            AuthAction, AuthContext, Authorization, TransactionOperation,
+        };
+        connection
+            .authorizer(Some(|context: AuthContext<'_>| {
+                if matches!(
+                    context.action,
+                    AuthAction::Transaction {
+                        operation: TransactionOperation::Rollback
+                    }
+                ) {
+                    Authorization::Deny
+                } else {
+                    Authorization::Allow
+                }
+            }))
+            .map_err(message)?;
+    }
     connection
         .create_scalar_function("wait_for_release", 0, FunctionFlags::SQLITE_UTF8, |_| {
             wait_for_release();
